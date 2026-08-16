@@ -1,0 +1,34 @@
+# DBAgent Settings
+# All thresholds and connection settings live here, not hardcoded.
+
+database:
+  # Connection URL — override via DB_URL env var
+  url: ""
+  # Read-only mode (default true per Rules.md §1)
+  read_only: true
+  # Query timeout in seconds
+  query_timeout: 30
+
+llm:
+  # Anthropic model to use
+  model: "claude-sonnet-4-20250514"
+  # Max tokens per response
+  max_tokens: 4096
+
+confidence:
+  # Threshold below which the agent refuses (0.0 - 1.0)
+  refusal_threshold: 0.3
+  # Threshold below which the agent flags uncertainty
+  flag_threshold: 0.6
+
+concurrency:
+  # Max concurrent queries before circuit breaker opens
+  max_concurrent: 5
+  # Circuit breaker cooldown in seconds
+  cooldown_seconds: 60
+
+schema:
+  # Embedding model for schema indexing
+  embedding_model: "default"
+  # Max schema elements to retrieve per query
+  top_k: 10

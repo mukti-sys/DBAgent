@@ -1,0 +1,9 @@
+# DBAgent Glossary — org-specific term definitions
+# Each entry maps a business term to its SQL-level meaning.
+# Format:
+#   term: <business term>
+#   definition: <plain-language definition>
+#   sql_expression: <optional SQL expression or column reference>
+#   notes: <optional notes about ambiguity or conflicts>
+
+terms: []

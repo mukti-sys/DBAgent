@@ -1,0 +1,47 @@
+# Model configuration per pipeline role.
+# Provider + model + credentials-env-var-name, settable per role.
+# Defaults to Anthropic Haiku/Sonnet/Opus routing per Architecture.md.
+#
+# Per Rules.md §1: API keys live in environment variables, never hardcoded.
+# Per Rules.md §1: If local model is configured, no stage silently falls back
+#   to an external API — including embeddings.
+
+# Default provider (used when a role doesn't specify its own)
+default_provider: "anthropic"
+
+roles:
+  intent:
+    # Classification-scale task — cheap model
+    provider: "anthropic"
+    model: "claude-3-5-haiku-20241022"
+    credentials_env: "ANTHROPIC_API_KEY"
+
+  generation:
+    # Core reasoning step — mid-tier model
+    provider: "anthropic"
+    model: "claude-sonnet-4-20250514"
+    credentials_env: "ANTHROPIC_API_KEY"
+
+  narration:
+    # Numbers substituted from real results — cheap model enough for phrasing
+    provider: "anthropic"
+    model: "claude-3-5-haiku-20241022"
+    credentials_env: "ANTHROPIC_API_KEY"
+
+  verification_explanation:
+    # Only for natural-language explanation of a flagged issue
+    provider: "anthropic"
+    model: "claude-3-5-haiku-20241022"
+    credentials_env: "ANTHROPIC_API_KEY"
+
+  embeddings:
+    # Schema/data embeddings — routes through llm_client.embed()
+    provider: "anthropic"
+    model: "text-embedding-3-small"
+    credentials_env: "ANTHROPIC_API_KEY"
+
+  escalation:
+    # Used when confidence_scorer flags low schema-match or join-confidence
+    provider: "anthropic"
+    model: "claude-sonnet-4-20250514"
+    credentials_env: "ANTHROPIC_API_KEY"
