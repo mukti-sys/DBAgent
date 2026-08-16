@@ -36,9 +36,14 @@ roles:
 
   embeddings:
     # Schema/data embeddings — routes through llm_client.embed()
-    provider: "anthropic"
+    # NOTE: Anthropic has no embeddings API. text-embedding-3-small is an
+    # OpenAI model, so this role must use provider "openai" with an OpenAI
+    # key. To keep everything on one provider, point this at a local model
+    # (e.g. provider "ollama") instead — per Rules.md §1 no stage may
+    # silently fall back to an external API.
+    provider: "openai"
     model: "text-embedding-3-small"
-    credentials_env: "ANTHROPIC_API_KEY"
+    credentials_env: "OPENAI_API_KEY"
 
   escalation:
     # Used when confidence_scorer flags low schema-match or join-confidence
