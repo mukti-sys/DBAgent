@@ -1,6 +1,6 @@
 # DBAgent
 
-A text-to-SQL agent that prioritizes **honesty over accuracy** — showing its work, flagging uncertainty, and refusing rather than guessing when it lacks signal to answer safely.
+A text-to-SQL agent that prioritizes **honesty over accuracy** showing its work, flagging uncertainty, and refusing rather than guessing when it lacks signal to answer safely.
 
 ## Features
 
