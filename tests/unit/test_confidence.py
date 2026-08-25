@@ -222,6 +222,23 @@ class TestSignals:
         assert "ambiguity_penalty" in signal_names
 
 
+class TestThresholdDefaults:
+    """Regression: explicit 0.0 thresholds must not fall back to config defaults."""
+
+    def test_zero_refusal_threshold_respected(self):
+        scorer = ConfidenceScorer(refusal_threshold=0.0)
+        assert scorer._refusal_threshold == 0.0
+
+    def test_zero_flag_threshold_respected(self):
+        scorer = ConfidenceScorer(flag_threshold=0.0)
+        assert scorer._flag_threshold == 0.0
+
+    def test_none_thresholds_use_config_defaults(self):
+        scorer = ConfidenceScorer()
+        assert scorer._refusal_threshold == 0.3
+        assert scorer._flag_threshold == 0.6
+
+
 class TestConvenienceMethod:
     """Test score_from_verification convenience method."""
 

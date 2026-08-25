@@ -81,8 +81,16 @@ class ConfidenceScorer:
     ):
         settings = load_settings()
         conf = settings.get("confidence", {})
-        self._refusal_threshold = refusal_threshold or conf.get("refusal_threshold", 0.3)
-        self._flag_threshold = flag_threshold or conf.get("flag_threshold", 0.6)
+        # Use `is None` checks: 0.0 is a legitimate threshold value and must
+        # not silently fall back to the config default.
+        self._refusal_threshold = (
+            refusal_threshold if refusal_threshold is not None
+            else conf.get("refusal_threshold", 0.3)
+        )
+        self._flag_threshold = (
+            flag_threshold if flag_threshold is not None
+            else conf.get("flag_threshold", 0.6)
+        )
 
     def score(
         self,

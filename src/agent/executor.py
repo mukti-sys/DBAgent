@@ -51,7 +51,12 @@ class QueryExecutor:
         settings = load_settings()
         db_settings = settings.get("database", {})
         self._execute_fn = execute_fn
-        self._timeout = query_timeout or db_settings.get("query_timeout", 30)
+        # `is None` check: 0 is a legitimate timeout value (no timeout) and
+        # must not silently fall back to the config default.
+        self._timeout = (
+            query_timeout if query_timeout is not None
+            else db_settings.get("query_timeout", 30)
+        )
         self._max_rows = max_result_rows
 
     def execute(
