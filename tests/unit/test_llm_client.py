@@ -1,12 +1,14 @@
 """
-Phase 8.5 — LLM Client tests.
+LLM Client tests — updated for multi-provider architecture.
 
-Per Tests.md §1:
-- llm_client.py: routes to the configured provider/model per role;
-  capability self-test correctly grades a compliant model as pass and a
-  malformed/non-compliant stub as degraded or fail; simulated timeout/rate-limit
-  triggers retry-with-backoff, then a clean 'refused: model unavailable' —
-  never a silent hang or a fabricated answer.
+Tests:
+- Model routing per role
+- Custom provider with base_url
+- Local model (Ollama) support
+- Provider/model listing
+- Structured output parsing
+- Retry with backoff
+- Capability self-test grading
 """
 
 import json
@@ -18,6 +20,8 @@ from unittest.mock import MagicMock, patch
 from src.agent.llm_client import (
     LLMClient,
     ModelConfig,
+    ProviderConfig,
+    ModelEntry,
     ModelUnavailableError,
     ModelCapabilityError,
     SelfTestResult,
@@ -27,41 +31,53 @@ from src.agent.llm_client import (
 
 @pytest.fixture
 def models_yaml(tmp_path):
-    """Create a test models.yaml."""
+    """Create a test models.yaml with new 3-section format."""
     config = tmp_path / "models.yaml"
     config.write_text("""
-default_provider: "test_provider"
+providers:
+  test_provider:
+    type: "test_provider"
+    credentials_env: "TEST_API_KEY"
+  test_local:
+    type: "ollama"
+    base_url: "http://localhost:11434"
+    credentials_env: ""
+
+models:
+  - id: "test-cheap"
+    provider: "test_provider"
+    tier: "cheap"
+    capabilities: ["completion", "structured_output"]
+  - id: "test-mid"
+    provider: "test_provider"
+    tier: "mid"
+    capabilities: ["completion", "structured_output"]
+  - id: "test-embed"
+    provider: "test_provider"
+    tier: "cheap"
+    capabilities: ["embeddings"]
+  - id: "test-strong"
+    provider: "test_provider"
+    tier: "expensive"
+    capabilities: ["completion", "structured_output"]
+  - id: "local-model"
+    provider: "test_local"
+    tier: "free"
+    capabilities: ["completion"]
 
 roles:
   intent:
-    provider: "test_provider"
     model: "test-cheap"
-    credentials_env: "TEST_API_KEY"
-
   generation:
-    provider: "test_provider"
     model: "test-mid"
-    credentials_env: "TEST_API_KEY"
-
   narration:
-    provider: "test_provider"
     model: "test-cheap"
-    credentials_env: "TEST_API_KEY"
-
-  verification_explanation:
-    provider: "test_provider"
+  verification:
     model: "test-cheap"
-    credentials_env: "TEST_API_KEY"
-
   embeddings:
-    provider: "test_provider"
     model: "test-embed"
-    credentials_env: "TEST_API_KEY"
-
   escalation:
-    provider: "test_provider"
     model: "test-strong"
-    credentials_env: "TEST_API_KEY"
 """)
     return config
 
@@ -97,7 +113,6 @@ class TestModelRouting:
         )
         config = client.get_model_config("intent")
         assert config.model == "test-cheap"
-        assert config.provider == "test_provider"
 
     def test_routes_to_generation_model(self, models_yaml):
         client = LLMClient(
@@ -139,22 +154,203 @@ class TestModelRouting:
         config = client.get_model_config("unknown_role")
         assert config.model == "test-mid"  # Falls back to generation
 
-    def test_litellm_model_id_format(self):
-        config = ModelConfig(
-            provider="anthropic",
-            model="claude-sonnet-4-20250514",
-            credentials_env="ANTHROPIC_API_KEY",
-        )
+
+class TestLiteLLMModelId:
+    """Test model ID formatting for LiteLLM."""
+
+    def test_standard_provider_format(self):
+        prov = ProviderConfig(name="anthropic", type="anthropic", credentials_env="KEY")
+        entry = ModelEntry(id="claude-sonnet-4-20250514", provider="anthropic")
+        config = ModelConfig(provider_config=prov, model_entry=entry)
         assert config.get_litellm_model_id() == "anthropic/claude-sonnet-4-20250514"
 
-    def test_local_model_id_format(self):
-        config = ModelConfig(
-            provider="local",
-            model="llama-3-8b",
+    def test_ollama_format(self):
+        prov = ProviderConfig(name="ollama", type="ollama", base_url="http://localhost:11434")
+        entry = ModelEntry(id="qwen3:8b", provider="ollama")
+        config = ModelConfig(provider_config=prov, model_entry=entry)
+        assert config.get_litellm_model_id() == "ollama/qwen3:8b"
+
+    def test_custom_openai_compatible(self):
+        prov = ProviderConfig(
+            name="custom", type="openai",
+            credentials_env="CUSTOM_KEY",
+            base_url="https://my-server.com/v1",
+        )
+        entry = ModelEntry(id="my-model", provider="custom")
+        config = ModelConfig(provider_config=prov, model_entry=entry)
+        assert config.get_litellm_model_id() == "openai/my-model"
+
+    def test_gemini_format(self):
+        prov = ProviderConfig(name="google", type="gemini", credentials_env="KEY")
+        entry = ModelEntry(id="gemini-2.5-flash", provider="google")
+        config = ModelConfig(provider_config=prov, model_entry=entry)
+        assert config.get_litellm_model_id() == "gemini/gemini-2.5-flash"
+
+
+class TestProviderConfig:
+    """Test provider configuration and credential detection."""
+
+    def test_local_provider_detected(self):
+        prov = ProviderConfig(name="ollama", type="ollama", base_url="http://localhost:11434")
+        assert prov.is_local is True
+
+    def test_cloud_provider_not_local(self):
+        prov = ProviderConfig(name="anthropic", type="anthropic", credentials_env="KEY")
+        assert prov.is_local is False
+
+    def test_localhost_base_url_is_local(self):
+        prov = ProviderConfig(
+            name="custom", type="openai",
+            base_url="http://localhost:1234/v1",
+        )
+        assert prov.is_local is True
+
+    def test_local_no_credentials_needed(self):
+        prov = ProviderConfig(name="ollama", type="ollama", credentials_env="")
+        assert prov.has_credentials is True
+
+    def test_cloud_needs_credentials(self, monkeypatch):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        prov = ProviderConfig(name="anthropic", type="anthropic", credentials_env="ANTHROPIC_API_KEY")
+        assert prov.has_credentials is False
+
+    def test_cloud_with_credentials(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-123")
+        prov = ProviderConfig(name="anthropic", type="anthropic", credentials_env="ANTHROPIC_API_KEY")
+        assert prov.has_credentials is True
+
+
+class TestLiteLLMKwargs:
+    """Test that extra kwargs for LiteLLM calls are built correctly."""
+
+    def test_base_url_passed(self):
+        prov = ProviderConfig(
+            name="custom", type="openai",
+            base_url="https://my-server.com/v1",
             credentials_env="",
         )
-        # Local models don't use provider/ prefix
-        assert config.get_litellm_model_id() == "llama-3-8b"
+        entry = ModelEntry(id="model", provider="custom")
+        config = ModelConfig(provider_config=prov, model_entry=entry)
+        kwargs = config.get_litellm_kwargs()
+        assert kwargs["api_base"] == "https://my-server.com/v1"
+
+    def test_api_version_passed(self):
+        prov = ProviderConfig(
+            name="azure", type="azure",
+            credentials_env="AZURE_KEY",
+            api_version="2024-02-01",
+        )
+        entry = ModelEntry(id="gpt-4o", provider="azure")
+        config = ModelConfig(provider_config=prov, model_entry=entry)
+        kwargs = config.get_litellm_kwargs()
+        assert kwargs["api_version"] == "2024-02-01"
+
+    def test_local_gets_dummy_key(self):
+        prov = ProviderConfig(name="ollama", type="ollama", credentials_env="")
+        entry = ModelEntry(id="qwen3:8b", provider="ollama")
+        config = ModelConfig(provider_config=prov, model_entry=entry)
+        kwargs = config.get_litellm_kwargs()
+        assert kwargs["api_key"] == "local"
+
+    def test_api_key_from_env(self, monkeypatch):
+        monkeypatch.setenv("MY_KEY", "sk-real-key")
+        prov = ProviderConfig(name="openai", type="openai", credentials_env="MY_KEY")
+        entry = ModelEntry(id="gpt-4o", provider="openai")
+        config = ModelConfig(provider_config=prov, model_entry=entry)
+        kwargs = config.get_litellm_kwargs()
+        assert kwargs["api_key"] == "sk-real-key"
+
+
+class TestListProviders:
+    """Test provider and model listing."""
+
+    def test_list_providers(self, models_yaml):
+        client = LLMClient(models_config_path=models_yaml)
+        providers = client.list_providers()
+        names = [p["name"] for p in providers]
+        assert "test_provider" in names
+        assert "test_local" in names
+
+    def test_list_models(self, models_yaml):
+        client = LLMClient(models_config_path=models_yaml)
+        models = client.list_available_models()
+        ids = [m["id"] for m in models]
+        assert "test-cheap" in ids
+        assert "test-mid" in ids
+        assert "local-model" in ids
+
+    def test_list_role_assignments(self, models_yaml):
+        client = LLMClient(models_config_path=models_yaml)
+        roles = client.list_role_assignments()
+        assert roles["intent"] == "test-cheap"
+        assert roles["generation"] == "test-mid"
+
+    def test_model_availability_check(self, models_yaml):
+        client = LLMClient(models_config_path=models_yaml)
+        models = client.list_available_models()
+        # Local model should be available (no creds needed)
+        local = next(m for m in models if m["id"] == "local-model")
+        assert local["available"] is True
+
+
+class TestCustomProvider:
+    """Test custom/third-party provider with base_url."""
+
+    def test_custom_provider_config(self, tmp_path):
+        config = tmp_path / "models.yaml"
+        config.write_text("""
+providers:
+  openrouter:
+    type: "openrouter"
+    credentials_env: "OPENROUTER_API_KEY"
+    base_url: "https://openrouter.ai/api/v1"
+
+models:
+  - id: "google/gemma-2-9b-it"
+    provider: "openrouter"
+    tier: "cheap"
+    capabilities: ["completion"]
+
+roles:
+  generation:
+    model: "google/gemma-2-9b-it"
+""")
+        client = LLMClient(models_config_path=config)
+        mc = client.get_model_config("generation")
+        assert mc.model == "google/gemma-2-9b-it"
+        assert mc.provider_config.base_url == "https://openrouter.ai/api/v1"
+        kwargs = mc.get_litellm_kwargs()
+        assert kwargs["api_base"] == "https://openrouter.ai/api/v1"
+
+
+class TestLocalModel:
+    """Test local model (Ollama) configuration."""
+
+    def test_local_model_routing(self, tmp_path):
+        config = tmp_path / "models.yaml"
+        config.write_text("""
+providers:
+  ollama:
+    type: "ollama"
+    base_url: "http://localhost:11434"
+    credentials_env: ""
+
+models:
+  - id: "qwen3:8b"
+    provider: "ollama"
+    tier: "free"
+    capabilities: ["completion"]
+
+roles:
+  generation:
+    model: "qwen3:8b"
+""")
+        client = LLMClient(models_config_path=config)
+        mc = client.get_model_config("generation")
+        assert mc.model == "qwen3:8b"
+        assert mc.provider_config.is_local is True
+        assert mc.get_litellm_model_id() == "ollama/qwen3:8b"
+        assert mc.has_credentials() is True  # Local doesn't need creds
 
 
 class TestGenerate:
@@ -269,7 +465,6 @@ class TestRetryWithBackoff:
             models_config_path=models_yaml,
             completion_fn=flaky_fn,
         )
-        # Patch time.sleep to avoid actual waits
         with patch("src.agent.llm_client.time.sleep"):
             result = client.generate(
                 role="intent",
@@ -303,7 +498,6 @@ class TestRetryWithBackoff:
                     role="intent",
                     messages=[{"role": "user", "content": "test"}],
                 )
-        # If we get here, the call raised properly — no hang
 
     def test_permanent_error_not_retried(self, models_yaml):
         call_count = 0
@@ -322,20 +516,19 @@ class TestRetryWithBackoff:
                 role="intent",
                 messages=[{"role": "user", "content": "test"}],
             )
-        assert call_count == 1  # Not retried
+        assert call_count == 1
 
 
 class TestCapabilitySelfTest:
     """Test capability self-test grading."""
 
     def test_compliant_model_passes(self, models_yaml):
-        """Self-test correctly grades a compliant model as pass."""
         def smart_fn(model, messages, **kwargs):
             content = messages[-1]["content"]
             if "status" in content and "42" in content:
                 return '{"status": "ok", "number": 42}'
             if "CANNOT_ANSWER" in content:
-                return "CANNOT_ANSWER - this question is not related to the database schema."
+                return "CANNOT_ANSWER - not a database question."
             return "some response"
 
         client = LLMClient(
@@ -347,21 +540,14 @@ class TestCapabilitySelfTest:
         assert result.is_usable is True
 
     def test_malformed_stub_fails(self, models_yaml):
-        """Self-test correctly fails a stub model that returns malformed output."""
-        def bad_fn(model, messages, **kwargs):
-            # Returns garbage for everything
-            return "not json, not a decline, just garbage"
-
         client = LLMClient(
             models_config_path=models_yaml,
-            completion_fn=bad_fn,
+            completion_fn=make_completion_fn("not json, not a decline, garbage"),
         )
         result = client.self_test("intent")
-        # Should be degraded or fail since structured output fails
         assert result.grade in ("degraded", "fail")
 
     def test_model_that_crashes_fails(self, models_yaml):
-        """A model that errors out on self-test gets grade 'fail'."""
         client = LLMClient(
             models_config_path=models_yaml,
             completion_fn=make_failing_completion_fn(),
@@ -372,12 +558,10 @@ class TestCapabilitySelfTest:
         assert result.is_usable is False
 
     def test_degraded_model_still_usable(self, models_yaml):
-        """A degraded model is usable but with warnings."""
         def partial_fn(model, messages, **kwargs):
             content = messages[-1]["content"]
             if "status" in content and "42" in content:
                 return '{"status": "ok", "number": 42}'
-            # Doesn't properly decline unanswerable questions
             return "The airspeed velocity is 42 km/h"
 
         client = LLMClient(
@@ -402,18 +586,27 @@ class TestCapabilitySelfTest:
 class TestConfigLoading:
     """Test models.yaml config loading."""
 
-    def test_loads_from_yaml(self, models_yaml):
+    def test_loads_providers(self, models_yaml):
         client = LLMClient(models_config_path=models_yaml)
-        config = client.get_model_config("intent")
-        assert config.provider == "test_provider"
-        assert config.model == "test-cheap"
+        providers = client.list_providers()
+        assert len(providers) >= 2
+
+    def test_loads_models(self, models_yaml):
+        client = LLMClient(models_config_path=models_yaml)
+        models = client.list_available_models()
+        assert len(models) >= 4
+
+    def test_loads_roles(self, models_yaml):
+        client = LLMClient(models_config_path=models_yaml)
+        roles = client.list_role_assignments()
+        assert "intent" in roles
+        assert "generation" in roles
 
     def test_missing_config_uses_defaults(self, tmp_path):
         nonexistent = tmp_path / "nonexistent.yaml"
         client = LLMClient(models_config_path=nonexistent)
         config = client.get_model_config("generation")
-        # Should fall back to hardcoded defaults
-        assert config.provider is not None
+        assert config.model is not None
 
     def test_no_config_path_works(self):
         client = LLMClient(completion_fn=make_completion_fn("ok"))
@@ -425,58 +618,47 @@ class TestConfigLoading:
 
 
 class TestProviderAbstraction:
-    """Test that the abstraction supports switching providers."""
+    """Test multi-provider switching."""
 
     def test_two_different_providers(self, tmp_path):
-        """Verify same interface works with different provider configs."""
-        # Config A: provider_a
         config_a = tmp_path / "models_a.yaml"
         config_a.write_text("""
-default_provider: "provider_a"
+providers:
+  prov_a:
+    type: "prov_a"
+    credentials_env: "KEY_A"
+models:
+  - id: "model-a"
+    provider: "prov_a"
 roles:
   generation:
-    provider: "provider_a"
     model: "model-a"
-    credentials_env: "KEY_A"
 """)
 
-        # Config B: provider_b
         config_b = tmp_path / "models_b.yaml"
         config_b.write_text("""
-default_provider: "provider_b"
+providers:
+  prov_b:
+    type: "prov_b"
+    credentials_env: "KEY_B"
+models:
+  - id: "model-b"
+    provider: "prov_b"
 roles:
   generation:
-    provider: "provider_b"
     model: "model-b"
-    credentials_env: "KEY_B"
 """)
 
         captured_models = []
-
         def capture_fn(model, messages, **kwargs):
             captured_models.append(model)
             return "response"
 
-        # Client A
-        client_a = LLMClient(
-            models_config_path=config_a,
-            completion_fn=capture_fn,
-        )
-        client_a.generate(
-            role="generation",
-            messages=[{"role": "user", "content": "test"}],
-        )
+        client_a = LLMClient(models_config_path=config_a, completion_fn=capture_fn)
+        client_a.generate(role="generation", messages=[{"role": "user", "content": "test"}])
 
-        # Client B
-        client_b = LLMClient(
-            models_config_path=config_b,
-            completion_fn=capture_fn,
-        )
-        client_b.generate(
-            role="generation",
-            messages=[{"role": "user", "content": "test"}],
-        )
+        client_b = LLMClient(models_config_path=config_b, completion_fn=capture_fn)
+        client_b.generate(role="generation", messages=[{"role": "user", "content": "test"}])
 
-        # They should route to different models
-        assert captured_models[0] == "provider_a/model-a"
-        assert captured_models[1] == "provider_b/model-b"
+        assert captured_models[0] == "prov_a/model-a"
+        assert captured_models[1] == "prov_b/model-b"

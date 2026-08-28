@@ -14,6 +14,12 @@ on persistent failure, surface 'refused: model unavailable'.
 
 Per Rules.md §4 (Model-dependent reliability): Capability self-test grades
 pass/degraded/fail before a model is trusted in the pipeline.
+
+Supports:
+- Anthropic, OpenAI, Google Gemini, Groq, Together (built-in)
+- Custom OpenAI-compatible endpoints (OpenRouter, Azure, vLLM, etc.)
+- Local models via Ollama or LM Studio (free, no API key)
+- User can swap any model for any role via config/models.yaml
 """
 
 import json
@@ -45,28 +51,99 @@ class ModelCapabilityError(Exception):
     pass
 
 
+class ProviderConfigError(Exception):
+    """Raised when provider configuration is invalid or missing."""
+    pass
+
+
+@dataclass
+class ProviderConfig:
+    """Configuration for an LLM provider."""
+    name: str
+    type: str                          # litellm provider type
+    credentials_env: str = ""          # env var name for API key
+    base_url: str | None = None        # custom endpoint URL
+    api_version: str | None = None     # for Azure etc.
+    extra: dict = field(default_factory=dict)
+
+    @property
+    def is_local(self) -> bool:
+        if self.type in ("ollama", "local"):
+            return True
+        if self.base_url and "localhost" in self.base_url:
+            return True
+        return False
+
+    @property
+    def has_credentials(self) -> bool:
+        if self.is_local and not self.credentials_env:
+            return True  # Local models don't need API keys
+        return bool(os.environ.get(self.credentials_env, ""))
+
+
+@dataclass
+class ModelEntry:
+    """A registered model with its provider and capabilities."""
+    id: str
+    provider: str
+    tier: str = "mid"                  # free, cheap, mid, expensive
+    capabilities: list[str] = field(default_factory=list)
+
+
 @dataclass
 class ModelConfig:
-    """Configuration for a single model role."""
-    provider: str
-    model: str
-    credentials_env: str
+    """Resolved model configuration for a pipeline role."""
+    provider_config: ProviderConfig
+    model_entry: ModelEntry
     role: str = ""
 
+    @property
+    def provider(self) -> str:
+        return self.provider_config.type
+
+    @property
+    def model(self) -> str:
+        return self.model_entry.id
+
     def get_litellm_model_id(self) -> str:
-        """
-        Return the model ID in LiteLLM format: provider/model.
-        LiteLLM uses this to route to the correct API.
-        """
-        # Local models served via OpenAI-compatible endpoint use model name directly
-        if self.provider in ("local", "ollama"):
-            return self.model
-        # All other providers use provider/model format
-        return f"{self.provider}/{self.model}"
+        """Return the model ID in LiteLLM format: provider/model."""
+        provider_type = self.provider_config.type
+
+        # Local models: Ollama uses "ollama/model"
+        if provider_type == "ollama":
+            return f"ollama/{self.model_entry.id}"
+
+        # OpenAI-compatible with custom base_url: use "openai/model"
+        if provider_type == "openai" and self.provider_config.base_url:
+            return f"openai/{self.model_entry.id}"
+
+        # All providers use provider/model format
+        return f"{provider_type}/{self.model_entry.id}"
+
+    def get_litellm_kwargs(self) -> dict:
+        """Return extra kwargs for litellm.completion/embedding calls."""
+        kwargs = {}
+
+        if self.provider_config.base_url:
+            kwargs["api_base"] = self.provider_config.base_url
+
+        if self.provider_config.api_version:
+            kwargs["api_version"] = self.provider_config.api_version
+
+        # Set API key from env if available
+        if self.provider_config.credentials_env:
+            api_key = os.environ.get(self.provider_config.credentials_env)
+            if api_key:
+                kwargs["api_key"] = api_key
+
+        # Local models: set a dummy key if none provided
+        if self.provider_config.is_local and "api_key" not in kwargs:
+            kwargs["api_key"] = "local"
+
+        return kwargs
 
     def has_credentials(self) -> bool:
-        """Check if the required env var is set."""
-        return bool(os.environ.get(self.credentials_env, ""))
+        return self.provider_config.has_credentials
 
 
 @dataclass
@@ -94,6 +171,8 @@ class LLMClient:
     - generate_structured(): JSON/structured output
     - embed(): embedding generation
     - self_test(): capability verification for a role's model
+    - list_available_models(): show what the user can use
+    - list_providers(): show configured providers
     """
 
     def __init__(
@@ -102,19 +181,9 @@ class LLMClient:
         completion_fn: Callable | None = None,
         embedding_fn: Callable | None = None,
     ):
-        """
-        Initialize LLM client.
-
-        Args:
-            models_config_path: Path to config/models.yaml.
-                If None, uses default config location.
-            completion_fn: Injectable completion function for testing.
-                Signature: (model, messages, **kwargs) -> response_text
-            embedding_fn: Injectable embedding function for testing.
-                Signature: (model, input_texts) -> list[list[float]]
-        """
-        self._role_configs: dict[str, ModelConfig] = {}
-        self._default_provider: str = "anthropic"
+        self._providers: dict[str, ProviderConfig] = {}
+        self._models: list[ModelEntry] = []
+        self._role_map: dict[str, str] = {}   # role -> model_id
         self._self_test_results: dict[str, SelfTestResult] = {}
 
         # Injectable functions (for testing without real API calls)
@@ -133,38 +202,104 @@ class LLMClient:
         with open(path, "r") as f:
             config = yaml.safe_load(f) or {}
 
-        self._default_provider = config.get("default_provider", "anthropic")
-
-        roles = config.get("roles", {})
-        for role_name, role_config in roles.items():
-            self._role_configs[role_name] = ModelConfig(
-                provider=role_config.get("provider", self._default_provider),
-                model=role_config.get("model", ""),
-                credentials_env=role_config.get("credentials_env", ""),
-                role=role_name,
+        # Load providers
+        for name, prov in config.get("providers", {}).items():
+            self._providers[name] = ProviderConfig(
+                name=name,
+                type=prov.get("type", name),
+                credentials_env=prov.get("credentials_env", ""),
+                base_url=prov.get("base_url"),
+                api_version=prov.get("api_version"),
+                extra=prov.get("extra", {}),
             )
 
-    def get_model_config(self, role: str) -> ModelConfig:
-        """Get model config for a given role."""
-        if role in self._role_configs:
-            return self._role_configs[role]
+        # Load models
+        for m in config.get("models", []):
+            self._models.append(ModelEntry(
+                id=m["id"],
+                provider=m["provider"],
+                tier=m.get("tier", "mid"),
+                capabilities=m.get("capabilities", ["completion"]),
+            ))
 
-        # Fall back to generation config or a sensible default
-        if "generation" in self._role_configs:
-            cfg = self._role_configs["generation"]
-            return ModelConfig(
-                provider=cfg.provider,
-                model=cfg.model,
-                credentials_env=cfg.credentials_env,
-                role=role,
+        # Load role mappings
+        for role, role_config in config.get("roles", {}).items():
+            if isinstance(role_config, dict):
+                self._role_map[role] = role_config.get("model", "")
+            elif isinstance(role_config, str):
+                self._role_map[role] = role_config
+
+    def get_model_config(self, role: str) -> ModelConfig:
+        """Get resolved model config for a pipeline role."""
+        model_id = self._role_map.get(role)
+
+        if not model_id:
+            # Fall back to generation role, then first available model
+            model_id = self._role_map.get("generation", "")
+
+        if not model_id and self._models:
+            model_id = self._models[0].id
+
+        # Find model entry
+        model_entry = self._find_model(model_id)
+        if not model_entry:
+            # Create a placeholder
+            model_entry = ModelEntry(id=model_id or "unknown", provider="anthropic")
+
+        # Find provider
+        provider_config = self._providers.get(model_entry.provider)
+        if not provider_config:
+            # Create a default provider config
+            provider_config = ProviderConfig(
+                name=model_entry.provider,
+                type=model_entry.provider,
+                credentials_env=f"{model_entry.provider.upper()}_API_KEY",
             )
 
         return ModelConfig(
-            provider=self._default_provider,
-            model="claude-sonnet-4-20250514",
-            credentials_env="ANTHROPIC_API_KEY",
+            provider_config=provider_config,
+            model_entry=model_entry,
             role=role,
         )
+
+    def _find_model(self, model_id: str) -> ModelEntry | None:
+        """Find a model entry by ID."""
+        for m in self._models:
+            if m.id == model_id:
+                return m
+        return None
+
+    def list_providers(self) -> list[dict]:
+        """List all configured providers with their status."""
+        result = []
+        for name, prov in self._providers.items():
+            result.append({
+                "name": name,
+                "type": prov.type,
+                "is_local": prov.is_local,
+                "has_credentials": prov.has_credentials,
+                "base_url": prov.base_url,
+            })
+        return result
+
+    def list_available_models(self) -> list[dict]:
+        """List all models the user has configured."""
+        result = []
+        for m in self._models:
+            prov = self._providers.get(m.provider)
+            available = prov.has_credentials if prov else False
+            result.append({
+                "id": m.id,
+                "provider": m.provider,
+                "tier": m.tier,
+                "capabilities": m.capabilities,
+                "available": available,
+            })
+        return result
+
+    def list_role_assignments(self) -> dict[str, str]:
+        """Show which model is assigned to which role."""
+        return dict(self._role_map)
 
     def generate(
         self,
@@ -191,6 +326,8 @@ class LLMClient:
         """
         config = self.get_model_config(role)
         model_id = config.get_litellm_model_id()
+        extra_kwargs = config.get_litellm_kwargs()
+        extra_kwargs.update(kwargs)
 
         return self._call_with_retry(
             fn=self._do_completion,
@@ -198,7 +335,7 @@ class LLMClient:
             messages=messages,
             max_tokens=max_tokens,
             temperature=temperature,
-            **kwargs,
+            **extra_kwargs,
         )
 
     def generate_structured(
@@ -210,26 +347,13 @@ class LLMClient:
         temperature: float = 0.0,
         **kwargs,
     ) -> dict[str, Any]:
-        """
-        Generate structured (JSON) output for the given role.
-
-        Args:
-            role: Pipeline role
-            messages: Chat messages
-            response_format: JSON schema for the response
-            max_tokens: Maximum tokens
-            temperature: Sampling temperature
-
-        Returns:
-            Parsed JSON dict
-
-        Raises:
-            ModelUnavailableError: After all retries exhausted
-        """
+        """Generate structured (JSON) output for the given role."""
         config = self.get_model_config(role)
         model_id = config.get_litellm_model_id()
+        extra_kwargs = config.get_litellm_kwargs()
+        extra_kwargs.update(kwargs)
 
-        # Add JSON instruction to the messages
+        # Add JSON instruction
         json_messages = list(messages)
         if json_messages and json_messages[-1]["role"] == "user":
             json_messages[-1] = dict(json_messages[-1])
@@ -242,16 +366,14 @@ class LLMClient:
             max_tokens=max_tokens,
             temperature=temperature,
             response_format=response_format,
-            **kwargs,
+            **extra_kwargs,
         )
 
         # Parse JSON from response
         try:
-            # Handle markdown code fences
             cleaned = text.strip()
             if cleaned.startswith("```"):
                 lines = cleaned.split("\n")
-                # Remove first and last fence lines
                 lines = [l for l in lines if not l.strip().startswith("```")]
                 cleaned = "\n".join(lines).strip()
             return json.loads(cleaned)
@@ -264,53 +386,38 @@ class LLMClient:
         texts: list[str],
         role: str = "embeddings",
     ) -> list[list[float]]:
-        """
-        Generate embeddings for the given texts.
-
-        Per Rules.md §1: routes through the configured provider,
-        never silently falls back to an external API.
-
-        Args:
-            texts: List of text strings to embed
-            role: Role to use for model selection (default: "embeddings")
-
-        Returns:
-            List of embedding vectors
-
-        Raises:
-            ModelUnavailableError: After all retries exhausted
-        """
+        """Generate embeddings for the given texts."""
         config = self.get_model_config(role)
         model_id = config.get_litellm_model_id()
+        extra_kwargs = config.get_litellm_kwargs()
 
         return self._call_with_retry(
             fn=self._do_embedding,
             model_id=model_id,
             texts=texts,
+            **extra_kwargs,
         )
 
     def self_test(self, role: str) -> SelfTestResult:
         """
         Run a capability self-test for a role's configured model.
 
-        Tests:
-        1. Valid structured/JSON output on a canary prompt
-        2. Correctly declines a deliberately unanswerable question
-        3. Tool-calling works if the role requires it (not tested here —
-           requires actual tool schemas)
-
         Grades: pass / degraded / fail
-        - pass: all checks succeed
-        - degraded: some checks fail, model still usable with warnings
-        - fail: critical checks fail, model should not be used
-
-        Per Rules.md §4 (Model-dependent reliability): A model that fails
-        is refused; it is never silently allowed to run at reduced reliability.
         """
         config = self.get_model_config(role)
         details = []
         failures = 0
         critical_failures = 0
+
+        # Check credentials first (skip for injected test functions)
+        if not self._completion_fn and not config.has_credentials():
+            return SelfTestResult(
+                grade="fail",
+                model_id=config.get_litellm_model_id(),
+                role=role,
+                details=[f"FAIL: No credentials found for provider '{config.provider}'. "
+                         f"Set env var: {config.provider_config.credentials_env}"],
+            )
 
         # Test 1: Structured output
         try:
@@ -347,7 +454,7 @@ class LLMClient:
             if "CANNOT_ANSWER" in response.upper() or "cannot" in response.lower():
                 details.append("PASS: Correctly declined unanswerable question")
             else:
-                details.append(f"DEGRADED: Did not clearly decline unanswerable question: {response[:100]}")
+                details.append(f"DEGRADED: Did not clearly decline: {response[:100]}")
                 failures += 1
         except Exception as e:
             details.append(f"FAIL: Decline test failed: {e}")
@@ -369,18 +476,9 @@ class LLMClient:
             details=details,
         )
         self._self_test_results[role] = result
-
-        if grade == "fail":
-            logger.error(f"Model self-test FAILED for role '{role}': {details}")
-        elif grade == "degraded":
-            logger.warning(f"Model self-test DEGRADED for role '{role}': {details}")
-        else:
-            logger.info(f"Model self-test PASSED for role '{role}'")
-
         return result
 
     def get_self_test_result(self, role: str) -> SelfTestResult | None:
-        """Get cached self-test result for a role."""
         return self._self_test_results.get(role)
 
     def _do_completion(
@@ -395,7 +493,6 @@ class LLMClient:
         if self._completion_fn:
             return self._completion_fn(model_id, messages, **kwargs)
 
-        # Use LiteLLM for actual API calls
         try:
             import litellm
             response = litellm.completion(
@@ -426,6 +523,7 @@ class LLMClient:
             response = litellm.embedding(
                 model=model_id,
                 input=texts,
+                **kwargs,
             )
             return [item["embedding"] for item in response.data]
         except ImportError:
@@ -438,12 +536,7 @@ class LLMClient:
         fn: Callable,
         **kwargs,
     ) -> Any:
-        """
-        Call a function with retry and exponential backoff.
-
-        Per Rules.md §4 (API reliability): retry transient failures,
-        surface 'refused: model unavailable' on persistent failure.
-        """
+        """Call a function with retry and exponential backoff."""
         last_error = None
         backoff = INITIAL_BACKOFF_SECONDS
 

@@ -1,52 +1,207 @@
-# Model configuration per pipeline role.
-# Provider + model + credentials-env-var-name, settable per role.
-# Defaults to Anthropic Haiku/Sonnet/Opus routing per Architecture.md.
+# DBAgent Model Configuration
+# ─────────────────────────────
+# Supports: Anthropic, OpenAI, Google, Groq, Together, OpenRouter,
+#           custom OpenAI-compatible endpoints, and local models (Ollama/LM Studio)
 #
 # Per Rules.md §1: API keys live in environment variables, never hardcoded.
 # Per Rules.md §1: If local model is configured, no stage silently falls back
 #   to an external API — including embeddings.
 
-# Default provider (used when a role doesn't specify its own)
-default_provider: "anthropic"
+# ──────────────────────────────────────────
+# PROVIDERS — define your available providers
+# ──────────────────────────────────────────
+# Each provider has: type, credentials, and optionally a base_url.
+# Users can add as many providers as they want.
+
+providers:
+  anthropic:
+    type: "anthropic"                   # Built-in LiteLLM provider
+    credentials_env: "ANTHROPIC_API_KEY"
+
+  openai:
+    type: "openai"
+    credentials_env: "OPENAI_API_KEY"
+
+  google:
+    type: "gemini"
+    credentials_env: "GEMINI_API_KEY"
+
+  # groq:
+  #   type: "groq"
+  #   credentials_env: "GROQ_API_KEY"
+
+  # together:
+  #   type: "together_ai"
+  #   credentials_env: "TOGETHER_API_KEY"
+
+  # ── Custom / third-party providers ──
+  # Any OpenAI-compatible endpoint (OpenRouter, Azure, vLLM, etc.)
+  #
+  # openrouter:
+  #   type: "openrouter"
+  #   credentials_env: "OPENROUTER_API_KEY"
+  #   base_url: "https://openrouter.ai/api/v1"
+  #
+  # azure:
+  #   type: "azure"
+  #   credentials_env: "AZURE_API_KEY"
+  #   base_url: "https://your-resource.openai.azure.com"
+  #   api_version: "2024-02-01"
+  #
+  # custom_server:
+  #   type: "openai"                   # Use "openai" type for any OpenAI-compatible API
+  #   credentials_env: "CUSTOM_API_KEY"
+  #   base_url: "https://your-server.com/v1"
+
+  # ── Local models (FREE, no API key needed) ──
+  # Ollama: install from https://ollama.com, then `ollama pull <model>`
+  #
+  # ollama:
+  #   type: "ollama"
+  #   base_url: "http://localhost:11434"
+  #   credentials_env: ""              # No API key needed
+  #
+  # LM Studio: run LM Studio, start local server
+  # lmstudio:
+  #   type: "openai"                   # LM Studio exposes OpenAI-compatible API
+  #   base_url: "http://localhost:1234/v1"
+  #   credentials_env: ""              # No API key needed
+
+# ──────────────────────────────────────────
+# MODELS — available models per provider
+# ──────────────────────────────────────────
+# List models you want to use. The agent picks from these based on role routing.
+# Users can add any model their provider supports.
+
+models:
+  # ── Anthropic ──
+  - id: "claude-sonnet-4-20250514"
+    provider: "anthropic"
+    tier: "mid"                       # cost tier: cheap, mid, expensive
+    capabilities: ["completion", "structured_output"]
+
+  - id: "claude-3-5-haiku-20241022"
+    provider: "anthropic"
+    tier: "cheap"
+    capabilities: ["completion", "structured_output"]
+
+  # - id: "claude-opus-4-20250514"
+  #   provider: "anthropic"
+  #   tier: "expensive"
+  #   capabilities: ["completion", "structured_output"]
+
+  # ── OpenAI ──
+  - id: "gpt-4o"
+    provider: "openai"
+    tier: "mid"
+    capabilities: ["completion", "structured_output", "embeddings"]
+
+  - id: "gpt-4o-mini"
+    provider: "openai"
+    tier: "cheap"
+    capabilities: ["completion", "structured_output"]
+
+  - id: "text-embedding-3-small"
+    provider: "openai"
+    tier: "cheap"
+    capabilities: ["embeddings"]
+
+  # ── Google ──
+  - id: "gemini-2.5-flash"
+    provider: "google"
+    tier: "cheap"
+    capabilities: ["completion", "structured_output"]
+
+  - id: "gemini-2.5-pro"
+    provider: "google"
+    tier: "mid"
+    capabilities: ["completion", "structured_output"]
+
+  # ── Local (Ollama) — uncomment after installing ──
+  # - id: "qwen3:8b"
+  #   provider: "ollama"
+  #   tier: "free"
+  #   capabilities: ["completion"]
+  #
+  # - id: "nomic-embed-text"
+  #   provider: "ollama"
+  #   tier: "free"
+  #   capabilities: ["embeddings"]
+
+# ──────────────────────────────────────────
+# ROLES — which model handles which pipeline step
+# ──────────────────────────────────────────
+# Each role maps to a specific model ID from the models list above.
+# Change these to use any model you want.
 
 roles:
   intent:
-    # Classification-scale task — cheap model
-    provider: "anthropic"
+    # Light task — cheap model
     model: "claude-3-5-haiku-20241022"
-    credentials_env: "ANTHROPIC_API_KEY"
+    description: "Intent classification and glossary resolution"
 
   generation:
-    # Core reasoning step — mid-tier model
-    provider: "anthropic"
+    # Core SQL generation — needs good reasoning
     model: "claude-sonnet-4-20250514"
-    credentials_env: "ANTHROPIC_API_KEY"
+    description: "SQL query generation"
 
   narration:
-    # Numbers substituted from real results — cheap model enough for phrasing
-    provider: "anthropic"
+    # Phrasing results — cheap model is fine
     model: "claude-3-5-haiku-20241022"
-    credentials_env: "ANTHROPIC_API_KEY"
+    description: "Result narration with real values"
 
-  verification_explanation:
-    # Only for natural-language explanation of a flagged issue
-    provider: "anthropic"
+  verification:
+    # Checking SQL validity — cheap model
     model: "claude-3-5-haiku-20241022"
-    credentials_env: "ANTHROPIC_API_KEY"
+    description: "SQL verification and issue explanation"
 
   embeddings:
-    # Schema/data embeddings — routes through llm_client.embed()
-    # NOTE: Anthropic has no embeddings API. text-embedding-3-small is an
-    # OpenAI model, so this role must use provider "openai" with an OpenAI
-    # key. To keep everything on one provider, point this at a local model
-    # (e.g. provider "ollama") instead — per Rules.md §1 no stage may
-    # silently fall back to an external API.
-    provider: "openai"
+    # Schema/data embeddings
     model: "text-embedding-3-small"
-    credentials_env: "OPENAI_API_KEY"
+    description: "Schema and query embeddings"
 
   escalation:
-    # Used when confidence_scorer flags low schema-match or join-confidence
-    provider: "anthropic"
+    # When confidence is low, retry with a better model
     model: "claude-sonnet-4-20250514"
-    credentials_env: "ANTHROPIC_API_KEY"
+    description: "Escalation for low-confidence queries"
+
+# ──────────────────────────────────────────
+# EXAMPLES — common configurations
+# ──────────────────────────────────────────
+#
+# ─── All Anthropic (simplest) ───
+# Just set ANTHROPIC_API_KEY and use defaults above.
+# Embeddings still need OpenAI — Anthropic has no embedding API.
+#
+# ─── All Google Gemini (cheapest paid) ───
+# roles:
+#   intent:     { model: "gemini-2.5-flash" }
+#   generation: { model: "gemini-2.5-pro" }
+#   narration:  { model: "gemini-2.5-flash" }
+#   verification: { model: "gemini-2.5-flash" }
+#   embeddings: { model: "text-embedding-004", provider: "google" }
+#   escalation: { model: "gemini-2.5-pro" }
+#
+# ─── All Local / Free (Ollama) ───
+# providers:
+#   ollama:
+#     type: "ollama"
+#     base_url: "http://localhost:11434"
+# roles:
+#   intent:     { model: "qwen3:8b" }
+#   generation: { model: "qwen3:32b" }
+#   narration:  { model: "qwen3:8b" }
+#   verification: { model: "qwen3:8b" }
+#   embeddings: { model: "nomic-embed-text" }
+#   escalation: { model: "qwen3:32b" }
+#
+# ─── Mixed (cheapest overall) ───
+# Use Gemini Flash for cheap tasks, Sonnet for hard ones,
+# local embeddings to avoid OpenAI:
+# roles:
+#   intent:     { model: "gemini-2.5-flash" }
+#   generation: { model: "claude-sonnet-4-20250514" }
+#   narration:  { model: "gemini-2.5-flash" }
+#   verification: { model: "gemini-2.5-flash" }
+#   embeddings: { model: "nomic-embed-text" }   # local, free
+#   escalation: { model: "claude-sonnet-4-20250514" }
