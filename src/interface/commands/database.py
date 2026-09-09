@@ -1,4 +1,4 @@
-"""Database commands — /connect, /tables, /schema, /dialect"""
+"""Database commands — /connect, /tables, /schema, /dialect, /sample"""
 import sqlite3
 from pathlib import Path
 from src.interface import display
@@ -32,8 +32,11 @@ def cmd_connect(args, context):
             known_columns[table_name] = [c[1] for c in cols]
         conn.close()
         context.update({
-            "db_path": db_path, "dialect": "sqlite", "db_connected": True,
-            "table_info": table_info, "table_names": table_names,
+            "db_path": db_path,
+            "dialect": "sqlite",
+            "db_connected": True,
+            "table_info": table_info,
+            "table_names": table_names,
             "known_columns": known_columns,
         })
         display.show_success(f"Connected to {db_path}")
@@ -107,6 +110,44 @@ def cmd_schema(args, context):
         display.show_error(f"Failed: {e}")
 
 
+def cmd_sample(args, context):
+    """Preview sample rows from a table."""
+    if not context.get("db_connected"):
+        display.show_error("Not connected.", "Use /connect <path> first.")
+        return
+    if not args:
+        display.show_error("Usage: /sample <table_name> [row_count]", "Example: /sample Customer 5")
+        return
+
+    table_name = args[0]
+    limit = 5
+    if len(args) > 1:
+        try:
+            limit = max(1, min(50, int(args[1])))
+        except ValueError:
+            pass
+
+    try:
+        conn = sqlite3.connect(context["db_path"])
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(f'SELECT * FROM "{table_name}" LIMIT {limit}')
+        rows = [dict(r) for r in cursor.fetchall()]
+        cursor.execute(f'SELECT COUNT(*) FROM "{table_name}"')
+        total_rows = cursor.fetchone()[0]
+        conn.close()
+
+        if not rows:
+            display.console.print(f"  [dim]Table '{table_name}' is empty.[/]\n")
+            return
+
+        display.console.print(f"\n  [bold]Sample data from [cyan]{table_name}[/] ({len(rows)} of {total_rows} rows):[/]")
+        display._show_result_table(rows, total_count=total_rows, max_display=limit)
+        display.console.print()
+    except Exception as e:
+        display.show_error(f"Failed to sample table '{table_name}': {e}")
+
+
 def cmd_dialect(args, context):
     if not args:
         display.console.print(f"  Current dialect: [bold]{context.get('dialect', 'sqlite')}[/]")
@@ -125,4 +166,5 @@ def register(registry):
     registry.register("disconnect", cmd_disconnect, "Disconnect", "/disconnect", "Database")
     registry.register("tables", cmd_tables, "Show all tables", "/tables", "Database")
     registry.register("schema", cmd_schema, "Show table schema", "/schema [table]", "Database")
+    registry.register("sample", cmd_sample, "Preview sample rows from a table", "/sample <table_name> [count]", "Database")
     registry.register("dialect", cmd_dialect, "Set SQL dialect", "/dialect sqlite|postgres|mysql", "Database")

@@ -43,3 +43,9 @@ Tests.md
 DBAgent-docs.zip
 .env
 *.env
+
+# Local runtime & user configs
+config/providers.yaml
+config/sessions/
+config/.prompt_history
+exports/
