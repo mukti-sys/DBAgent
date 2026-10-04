@@ -49,3 +49,9 @@ config/providers.yaml
 config/sessions/
 config/.prompt_history
 exports/
+
+# Third-party reference code (read-only, do NOT commit)
+terminal-ui-ux/
+
+# Test databases
+*.db
