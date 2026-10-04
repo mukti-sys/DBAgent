@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dbagent"
+version = "0.1.0"
+description = "Text-to-SQL agent prioritizing honesty over accuracy with terminal UI."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "sqlalchemy>=2.0",
+    "sqlglot>=20.0",
+    "litellm>=1.40.0",
+    "pyyaml>=6.0",
+    "rich>=13.0.0",
+    "prompt_toolkit>=3.0.0",
+    "InquirerPy>=0.3.4",
+]
+
+[project.scripts]
+dbagent = "src.interface.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["src*"]
