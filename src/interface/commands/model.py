@@ -1,6 +1,7 @@
 """Model commands — /model to switch models."""
 from InquirerPy import inquirer
 from src.interface import display
+from src.interface.display import THEME as T, console
 from src.interface.commands.provider import PROVIDERS, _save_provider_config
 
 
@@ -18,26 +19,24 @@ def cmd_model(args, context):
         return
 
     provider = PROVIDERS.get(provider_key, {})
-    models = provider.get("models", [])
-    if not models:
-        try:
-            model_name = inquirer.text(message="Enter model name:").execute()
-        except (KeyboardInterrupt, EOFError):
-            return
-    else:
-        try:
-            model_name = inquirer.select(
-                message="Select a model:",
-                choices=models + ["Enter custom model name"],
-                pointer="›",
-            ).execute()
-        except (KeyboardInterrupt, EOFError):
-            return
-        if model_name == "Enter custom model name":
-            try:
-                model_name = inquirer.text(message="Model name:").execute()
-            except (KeyboardInterrupt, EOFError):
-                return
+    suggestions = provider.get("models", [])
+    if suggestions:
+        console.print()
+        console.print(f"  [{T['text_secondary']}]Suggestions:[/]")
+        for s in suggestions:
+            console.print(f"    [{T['text_secondary']}]{s}[/]")
+        console.print()
+
+    current = context.get("model_name", "")
+    try:
+        model_name = inquirer.text(
+            message="Model name:",
+            default=current,
+            qmark="  ",
+            amark="  ",
+        ).execute()
+    except (KeyboardInterrupt, EOFError):
+        return
 
     if model_name:
         context["model_name"] = model_name

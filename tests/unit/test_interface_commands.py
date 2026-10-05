@@ -108,7 +108,7 @@ def test_provider_baseurl_key_local(base_context, tmp_path, monkeypatch):
     provider_cmds.cmd_local(["qwen2.5-coder"], base_context)
     assert base_context["provider_key"] == "ollama"
     assert base_context["model_name"] == "qwen2.5-coder"
-    assert base_context["base_url"] == "http://localhost:11434/v1"
+    assert base_context["base_url"] == "http://localhost:11434"
 
 
 def test_model_command(base_context):
