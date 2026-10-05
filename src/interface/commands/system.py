@@ -7,6 +7,7 @@ from rich.panel import Panel
 from rich import box
 
 from src.interface import display
+from src.interface.display import THEME as T, console
 
 
 def cmd_help(args, context):
@@ -16,8 +17,8 @@ def cmd_help(args, context):
     if args:
         cmd = registry.get(args[0].lstrip("/"))
         if cmd:
-            display.console.print(f"\n  [bold green]{cmd['usage']}[/]")
-            display.console.print(f"  {cmd['description']}\n")
+            console.print(f"\n  [{T['text_accent']}]{cmd['usage']}[/]")
+            console.print(f"  {cmd['description']}\n")
         else:
             display.show_error(f"Unknown command: {args[0]}")
         return
@@ -51,7 +52,7 @@ def cmd_quit(args, context):
         except Exception:
             pass
 
-    display.console.print("\n  [dim]Goodbye! 👋[/]\n")
+    console.print(f"\n  [{T['text_secondary']}]Goodbye.[/]\n")
     context["should_quit"] = True
 
 
@@ -61,34 +62,43 @@ def cmd_history(args, context):
 
 def cmd_doctor(args, context):
     """Run diagnostics on environment, database, LLM setup, and session storage."""
-    table = Table(title="[bold]DBAgent System Doctor[/]", box=box.ROUNDED)
-    table.add_column("Component", style="bold white", width=24)
+    PASS = f"[{T['status_success']}]PASS[/]"
+    WARN = f"[{T['status_warning']}]WARN[/]"
+    FAIL = f"[{T['status_error']}]FAIL[/]"
+    NA = f"[{T['text_secondary']}]N/A[/]"
+
+    table = Table(
+        title=f"[{T['text_accent']}]DBAgent System Doctor[/]",
+        box=box.ROUNDED,
+        border_style=T["border_default"],
+    )
+    table.add_column("Component", style=f"bold {T['text_primary']}", width=24)
     table.add_column("Status", width=10, justify="center")
-    table.add_column("Details", style="dim")
+    table.add_column("Details", style=T["text_secondary"])
 
     # 1. Database
     if context.get("db_connected"):
         table_count = len(context.get("table_names", []))
-        table.add_row("Database Connection", "[bold green]PASS[/]", f"{context.get('db_path')} ({table_count} tables)")
+        table.add_row("Database Connection", PASS, f"{context.get('db_path')} ({table_count} tables)")
     else:
-        table.add_row("Database Connection", "[bold yellow]WARN[/]", "Not connected (run /connect <db>)")
+        table.add_row("Database Connection", WARN, "Not connected (run /connect <db>)")
 
     # 2. LLM Model
     if context.get("model_name"):
         provider = context.get("provider_name") or "Default"
-        table.add_row("LLM Model", "[bold green]PASS[/]", f"{context.get('model_name')} via {provider}")
+        table.add_row("LLM Model", PASS, f"{context.get('model_name')} via {provider}")
     else:
-        table.add_row("LLM Model", "[bold yellow]WARN[/]", "Not configured (run /provider or /local)")
+        table.add_row("LLM Model", WARN, "Not configured (run /provider or /local)")
 
     # 3. Base URL / API Key
     prov_key = context.get("provider_key")
     if prov_key == "ollama":
         url = context.get("base_url") or "http://localhost:11434/v1"
-        table.add_row("LLM Endpoint", "[bold green]PASS[/]", f"Local Ollama at {url}")
-        table.add_row("API Key", "[bold green]PASS[/]", "Not required for local LLM")
+        table.add_row("LLM Endpoint", PASS, f"Local Ollama at {url}")
+        table.add_row("API Key", PASS, "Not required for local LLM")
     else:
         url = context.get("base_url") or "Provider default"
-        table.add_row("LLM Endpoint", "[bold green]PASS[/]", url)
+        table.add_row("LLM Endpoint", PASS, url)
         has_key = bool(context.get("api_key"))
         if not has_key and prov_key:
             from src.interface.commands.provider import PROVIDERS
@@ -96,20 +106,20 @@ def cmd_doctor(args, context):
             if env_key and os.environ.get(env_key):
                 has_key = True
         if has_key:
-            table.add_row("API Key", "[bold green]PASS[/]", "API key is present")
+            table.add_row("API Key", PASS, "API key is present")
         elif context.get("model_name"):
-            table.add_row("API Key", "[bold yellow]WARN[/]", "API key missing (run /key <api_key>)")
+            table.add_row("API Key", WARN, "API key missing (run /key <api_key>)")
         else:
-            table.add_row("API Key", "[bold dim]N/A[/]", "Configure provider first")
+            table.add_row("API Key", NA, "Configure provider first")
 
     # 4. Sessions
     sessions_dir = Path("config/sessions")
     try:
         sessions_dir.mkdir(parents=True, exist_ok=True)
         count = len(list(sessions_dir.glob("*.json")))
-        table.add_row("Session Store", "[bold green]PASS[/]", f"config/sessions/ ({count} saved)")
+        table.add_row("Session Store", PASS, f"config/sessions/ ({count} saved)")
     except Exception as e:
-        table.add_row("Session Store", "[bold red]FAIL[/]", str(e))
+        table.add_row("Session Store", FAIL, str(e))
 
     # 5. Core Pipeline
     try:
@@ -117,18 +127,18 @@ def cmd_doctor(args, context):
         from src.agent.sql_generator import SQLGenerator
         from src.agent.critic import Critic
         from src.agent.result_validator import ResultValidator
-        table.add_row("Core Pipeline", "[bold green]PASS[/]", "All agent components verified")
+        table.add_row("Core Pipeline", PASS, "All agent components verified")
     except Exception as e:
-        table.add_row("Core Pipeline", "[bold red]FAIL[/]", f"Import error: {e}")
+        table.add_row("Core Pipeline", FAIL, f"Import error: {e}")
 
     # 6. Memory & Multi-turn
     conv = context.get("conversation_state")
     turns = conv.turn_count if conv else 0
-    table.add_row("Multi-turn Memory", "[bold green]PASS[/]", f"Active ({turns} turns in memory)")
+    table.add_row("Multi-turn Memory", PASS, f"Active ({turns} turns in memory)")
 
-    display.console.print()
-    display.console.print(table)
-    display.console.print()
+    console.print()
+    console.print(table)
+    console.print()
 
 
 def register(registry):

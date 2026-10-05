@@ -8,6 +8,7 @@ from rich.panel import Panel
 from rich import box
 
 from src.interface import display
+from src.interface.display import THEME as T, console
 from src.interface.session_manager import SessionManager
 
 
@@ -39,29 +40,29 @@ def _list_sessions(context):
     current_id = context.get("session_id")
 
     if not sessions:
-        display.console.print("  [dim]No saved sessions found. Use /session save [name] to save current session.[/]\n")
+        console.print(f"  [{T['text_secondary']}]No saved sessions found. Use /session save [name] to save current session.[/]\n")
         return
 
-    table = Table(title="[bold]Saved Sessions[/]", box=box.ROUNDED)
+    table = Table(title=f"[{T['text_accent']}]Saved Sessions[/]", box=box.ROUNDED, border_style=T["border_default"])
     table.add_column("Status", width=3, justify="center")
-    table.add_column("ID / Name", style="bold white")
-    table.add_column("Last Active", style="dim")
-    table.add_column("Database", style="cyan")
-    table.add_column("Queries", justify="right", style="green")
-    table.add_column("Last Question", style="dim", max_width=40)
+    table.add_column("ID / Name", style=f"bold {T['text_primary']}")
+    table.add_column("Last Active", style=T["text_secondary"])
+    table.add_column("Database", style=T["ui_symbol"])
+    table.add_column("Queries", justify="right", style=T["status_success"])
+    table.add_column("Last Question", style=T["text_secondary"], max_width=40)
 
     for s in sessions:
         sid = s["session_id"]
         is_current = (sid == current_id or s.get("name") == context.get("session_name"))
-        indicator = "[bold green]●[/]" if is_current else " "
+        indicator = f"[{T['status_success']}]*[/]" if is_current else " "
         display_name = s.get("name") or sid
         if display_name != sid:
-            display_title = f"{display_name}\n[dim]({sid})[/dim]"
+            display_title = f"{display_name}\n[{T['text_secondary']}]({sid})[/]"
         else:
             display_title = sid
 
-        db_str = s.get("db_path") or "[dim]None[/]"
-        if db_str != "[dim]None[/]":
+        db_str = s.get("db_path") or f"[{T['text_secondary']}]None[/]"
+        if db_str != f"[{T['text_secondary']}]None[/]":
             from pathlib import Path
             db_str = Path(db_str).name
 
@@ -75,14 +76,14 @@ def _list_sessions(context):
             updated,
             db_str,
             str(s.get("query_count", 0)),
-            s.get("last_question", "")[:40] or "[dim]-[dim]",
+            s.get("last_question", "")[:40] or f"[{T['text_secondary']}]-[/]",
         )
 
-    display.console.print(table)
-    display.console.print(
-        "  [dim]Commands: [bold green]/session load <id>[/] to continue, "
-        "[bold green]/session new [name][/] for fresh session, "
-        "[bold green]/session save [name][/] to save.[/]\n"
+    console.print(table)
+    console.print(
+        f"  [{T['text_secondary']}]Commands: [{T['text_accent']}]/session load <id>[/] to continue, "
+        f"[{T['text_accent']}]/session new [name][/] for fresh session, "
+        f"[{T['text_accent']}]/session save [name][/] to save.[/]\n"
     )
 
 
@@ -117,8 +118,8 @@ def _new_session(args, context):
         conversation_state=conv_state,
     )
 
-    display.show_success(f"Started new session: [bold]{name or new_id}[/]")
-    display.console.print(f"  [dim]Session ID: {new_id}[/]\n")
+    display.show_success(f"Started new session: {name or new_id}")
+    console.print(f"  [{T['text_secondary']}]Session ID: {new_id}[/]\n")
 
 
 def _save_session(args, context):
@@ -133,8 +134,8 @@ def _save_session(args, context):
         name=name,
         conversation_state=context.get("conversation_state"),
     )
-    display.show_success(f"Session saved: [bold]{name or session_id}[/]")
-    display.console.print(f"  [dim]Saved to {path}[/]\n")
+    display.show_success(f"Session saved: {name or session_id}")
+    console.print(f"  [{T['text_secondary']}]Saved to {path}[/]\n")
 
 
 def _load_session(args, context):
@@ -179,28 +180,28 @@ def _load_session(args, context):
     name = session_data.get("name") or session_data["session_id"]
     query_count = len(session_data.get("history", []))
 
-    display.show_success(f"Resumed session: [bold]{name}[/]")
-    info_parts = [f"[cyan]{query_count} prior queries[/]"]
+    display.show_success(f"Resumed session: {name}")
+    info_parts = [f"[{T['ui_symbol']}]{query_count} prior queries[/]"]
     if db_reconnected:
-        info_parts.append(f"[green]Connected to {db_path}[/]")
+        info_parts.append(f"[{T['status_success']}]Connected to {db_path}[/]")
     elif db_path:
-        info_parts.append(f"[yellow]Database {db_path} could not be auto-reconnected[/]")
+        info_parts.append(f"[{T['status_warning']}]Database {db_path} could not be auto-reconnected[/]")
 
-    display.console.print(f"  {' │ '.join(info_parts)}\n")
+    console.print(f"  {' | '.join(info_parts)}\n")
 
 
 def _show_session_info(context):
     session_id = context.get("session_id", "None")
     session_name = context.get("session_name") or session_id
-    db_path = context.get("db_path") or "[dim]Not connected[/]"
-    model = context.get("model_name") or "[dim]Not set[/]"
+    db_path = context.get("db_path") or f"[{T['text_secondary']}]Not connected[/]"
+    model = context.get("model_name") or f"[{T['text_secondary']}]Not set[/]"
     history_count = len(context.get("history", []))
 
     conv_state = context.get("conversation_state")
     memory_turns = conv_state.turn_count if conv_state else 0
 
     table = Table(show_header=False, box=box.SIMPLE, padding=(0, 2))
-    table.add_column("Key", style="dim")
+    table.add_column("Key", style=T["text_secondary"])
     table.add_column("Value")
     table.add_row("Session Name", session_name)
     table.add_row("Session ID", session_id)
@@ -209,7 +210,7 @@ def _show_session_info(context):
     table.add_row("Queries Run", str(history_count))
     table.add_row("Conversation Memory Turns", str(memory_turns))
 
-    display.console.print(Panel(table, title="[bold]Current Session Info[/]", border_style="cyan"))
+    console.print(Panel(table, title=f"[{T['text_accent']}]Current Session Info[/]", border_style=T["border_default"]))
 
 
 def _delete_session(args, context):

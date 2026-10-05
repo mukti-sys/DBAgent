@@ -2,6 +2,7 @@
 import sqlite3
 from pathlib import Path
 from src.interface import display
+from src.interface.display import THEME as T, console
 
 
 def cmd_connect(args, context):
@@ -40,7 +41,7 @@ def cmd_connect(args, context):
             "known_columns": known_columns,
         })
         display.show_success(f"Connected to {db_path}")
-        display.console.print(f"  [dim]Found {len(tables)} table(s). Type /tables to see them.[/]\n")
+        console.print(f"  [{T['text_secondary']}]Found {len(tables)} table(s). Type /tables to see them.[/]\n")
     except Exception as e:
         display.show_error(f"Connection failed: {e}")
 
@@ -80,7 +81,7 @@ def cmd_schema(args, context):
         return
     if not args:
         cmd_tables([], context)
-        display.console.print("  [dim]Use /schema <table_name> for details.[/]\n")
+        console.print(f"  [{T['text_secondary']}]Use /schema <table_name> for details.[/]\n")
         return
     table_name = args[0]
     try:
@@ -138,20 +139,20 @@ def cmd_sample(args, context):
         conn.close()
 
         if not rows:
-            display.console.print(f"  [dim]Table '{table_name}' is empty.[/]\n")
+            console.print(f"  [{T['text_secondary']}]Table '{table_name}' is empty.[/]\n")
             return
 
-        display.console.print(f"\n  [bold]Sample data from [cyan]{table_name}[/] ({len(rows)} of {total_rows} rows):[/]")
+        console.print(f"\n  [bold]Sample data from [{T['ui_symbol']}]{table_name}[/] ({len(rows)} of {total_rows} rows):[/]")
         display._show_result_table(rows, total_count=total_rows, max_display=limit)
-        display.console.print()
+        console.print()
     except Exception as e:
         display.show_error(f"Failed to sample table '{table_name}': {e}")
 
 
 def cmd_dialect(args, context):
     if not args:
-        display.console.print(f"  Current dialect: [bold]{context.get('dialect', 'sqlite')}[/]")
-        display.console.print("  [dim]Usage: /dialect sqlite|postgres|mysql[/]\n")
+        console.print(f"  Current dialect: [{T['text_accent']}]{context.get('dialect', 'sqlite')}[/]")
+        console.print(f"  [{T['text_secondary']}]Usage: /dialect sqlite|postgres|mysql[/]\n")
         return
     dialect = args[0].lower()
     if dialect not in ("sqlite", "postgres", "postgresql", "mysql"):
