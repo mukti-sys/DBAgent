@@ -2,9 +2,10 @@
 CLI entry point for DBAgent.
 
 Usage:
-    python -m src.interface.cli                       # Interactive setup
-    python -m src.interface.cli --db chinook.db        # Connect directly
-    python -m src.interface.cli --db chinook.db --model gemini-2.0-flash
+    dbagent                                   # Interactive setup
+    dbagent --db chinook.db                   # Connect directly
+    dbagent --db chinook.db --model gpt-4o    # Connect with a specific model
+    dbagent --db mydata.db --model gemini-2.5-flash -v
 """
 
 import argparse
@@ -14,10 +15,11 @@ import sys
 
 def main():
     parser = argparse.ArgumentParser(
-        description="DBAgent — Ask your database questions in plain English.",
+        prog="dbagent",
+        description="DBAgent -- Ask your database questions in plain English.",
     )
     parser.add_argument("--db", type=str, default=None, help="Path to database file")
-    parser.add_argument("--model", type=str, default=None, help="LLM model name")
+    parser.add_argument("--model", type=str, default=None, help="LLM model name (any model your API supports)")
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose logging")
 
     args = parser.parse_args()

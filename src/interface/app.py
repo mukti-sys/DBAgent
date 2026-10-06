@@ -10,8 +10,10 @@ from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import WordCompleter
 from prompt_toolkit.formatted_text import HTML
 from pathlib import Path
+from rich.panel import Panel
 
 from src.interface import display
+from src.interface.display import THEME as T
 from src.interface.commands import CommandRegistry
 from src.interface.commands import system as system_cmds
 from src.interface.commands import database as database_cmds
@@ -97,22 +99,62 @@ class App:
         self._load_saved_config()
 
     def run(self):
-        display.show_banner()
+        display.show_banner(
+            model=self.context.get("model_name"),
+            db_path=self.context.get("db_path"),
+        )
+
+        # Show startup tip (from Tips.tsx)
+        display.show_tips()
+        display.console.print()
+
         if self.context.get("db_path"):
             database_cmds.cmd_connect([self.context["db_path"]], self.context)
+
+        # Auto-launch provider wizard on first run (like AuthDialog.tsx)
         if not self.context.get("model_name"):
             display.console.print(
-                "  [yellow]No LLM provider configured.[/]\n"
-                "  [dim]Run [bold green]/provider[/] for interactive wizard, "
-                "[bold green]/local[/] for local Ollama, "
-                "or [bold green]/connect <db>[/] to explore tables.[/]\n"
+                f"  [{T['text_accent']}]No provider configured.[/]"
             )
+            display.console.print(
+                f"  [{T['text_secondary']}]Let's set one up to get started.\n[/]"
+            )
+            provider_cmds.cmd_provider([], self.context)
+            if self.context.get("model_name"):
+                display.console.print(
+                    f"  [{T['status_success']}]You're all set![/] "
+                    f"[{T['text_secondary']}]Connect a database with /connect <path>, then ask questions.[/]\n"
+                )
+
+        # Footer hint (from Footer.tsx line 157: "? for shortcuts")
+        display.show_footer_hint()
+        display.console.print()
 
         while not self.context.get("should_quit"):
             try:
                 # Dynamic prompt showing active db & session indicator
                 prompt_html = self._build_prompt_html()
-                user_input = self.prompt_session.prompt(HTML(prompt_html)).strip()
+
+                # Placeholder (from InputPrompt.tsx line 141-145):
+                # "Type your message or @path/to/file" -> adapted for DBAgent
+                placeholder = None
+                if self.context.get("db_connected"):
+                    placeholder = HTML(
+                        "<style fg='#6C7086'>Ask a question about your database...</style>"
+                    )
+                elif self.context.get("model_name"):
+                    placeholder = HTML(
+                        "<style fg='#6C7086'>Connect a database with /connect, then ask questions...</style>"
+                    )
+
+                # Bottom toolbar (from Footer.tsx): persistent status bar
+                toolbar = self._build_toolbar_html()
+
+                user_input = self.prompt_session.prompt(
+                    HTML(prompt_html),
+                    placeholder=placeholder,
+                    bottom_toolbar=HTML(toolbar) if toolbar else None,
+                ).strip()
                 if not user_input:
                     continue
                 self._handle_input(user_input)
@@ -127,9 +169,33 @@ class App:
         db_name = ""
         if self.context.get("db_connected") and self.context.get("db_path"):
             p = Path(self.context["db_path"]).name
-            db_name = f"<ansicyan>({p})</ansicyan> "
+            db_name = f"<style fg='#89DCEB'>{p}</style> "  # AccentCyan
 
-        return f"<ansigreen><b>DBAgent</b></ansigreen> {db_name}<ansigray>›</ansigray> "
+        return f"  {db_name}<style fg='#CBA6F7' bold='true'>></style> "  # AccentPurple
+
+    def _build_toolbar_html(self) -> str:
+        """
+        Build the bottom toolbar content (from Footer.tsx).
+        Shows: model | db (tables) | queries | ? for shortcuts
+        """
+        parts = []
+
+        model = self.context.get("model_name")
+        if model:
+            parts.append(f"<style fg='#CBA6F7'>{model}</style>")
+
+        if self.context.get("db_connected"):
+            db_name = Path(self.context["db_path"]).name
+            table_count = len(self.context.get("table_names", []))
+            parts.append(f"<style fg='#89DCEB'>{db_name} ({table_count} tables)</style>")
+
+        query_count = len(self.context.get("history", []))
+        if query_count:
+            parts.append(f"<style fg='#A6E3A1'>{query_count} queries</style>")
+
+        parts.append("<style fg='#6C7086'>? for shortcuts</style>")
+
+        return " <style fg='#6C7086'>|</style> ".join(parts)
 
     def _cleanup_and_exit(self):
         # Auto-save session on exit
@@ -142,7 +208,7 @@ class App:
                 )
             except Exception:
                 pass
-        display.console.print("\n  [dim]Goodbye! 👋[/]\n")
+        display.console.print(f"\n  [{T['text_secondary']}]Goodbye.[/]\n")
 
     def _handle_input(self, user_input):
         if user_input.startswith("/"):
@@ -167,19 +233,22 @@ class App:
 
         prompt_question = question
         if inheritance.is_ambiguous and inheritance.clarifying_question:
-            display.console.print(f"\n  [yellow]❓ {inheritance.clarifying_question}[/]\n")
+            display.console.print(f"\n  [{T['status_warning']}]{inheritance.clarifying_question}[/]\n")
 
         if inheritance.is_follow_up:
-            display.console.print("  [dim]🔗 Following up from previous query...[/]")
+            display.console.print(f"  [{T['text_secondary']}]Following up from previous query...[/]")
             prompt_question = self.conversation_state.build_context_prompt(question, inheritance)
 
-        display.console.print("  [dim]Thinking...[/]", end="\r")
         try:
-            result = self._run_pipeline(prompt_question)
-            display.console.print("              ", end="\r")
+            with display.Spinner("Generating SQL and analyzing invariants..."):
+                result = self._run_pipeline(prompt_question)
 
             if result.refused:
                 display.show_error(f"Refused: {result.refusal_reason}")
+                if result.targeted_clarification:
+                    display.console.print(f"\n  [{T['status_warning']}]Actionable Clarification:[/] {result.targeted_clarification.question}")
+                    if result.targeted_clarification.options:
+                        display.console.print(f"  [{T['text_secondary']}]Options:[/] {', '.join(result.targeted_clarification.options)}\n")
             elif result.error:
                 display.show_error(result.error)
             else:
@@ -196,6 +265,13 @@ class App:
                     execution_time_ms=result.execution_time_ms,
                     recalled_facts=result.recalled_facts,
                 )
+
+                if result.answer_set and result.answer_set.has_alternatives:
+                    display.console.print(Panel(
+                        result.answer_set.format_display(),
+                        title=f"[bold {T['status_warning']}]Alternative Interpretations (Honest Answer Set)[/]",
+                        border_style=T['status_warning'],
+                    ))
 
             self.context["last_result"] = result
             self.context["history"].append({
