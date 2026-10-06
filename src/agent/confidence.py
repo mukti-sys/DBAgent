@@ -101,6 +101,8 @@ class ConfidenceScorer:
         has_hallucinated_refs: bool = False,
         has_cartesian_join: bool = False,
         is_ambiguous: bool = False,
+        counterfactual_passed: bool = True,
+        uncertainty_score: float = 0.0,
     ) -> ConfidenceResult:
         """
         Compute composite confidence from individual signals.
@@ -113,6 +115,8 @@ class ConfidenceScorer:
             has_hallucinated_refs: Whether hallucinated tables/columns found.
             has_cartesian_join: Whether a cartesian join was detected.
             is_ambiguous: Whether the question was ambiguous.
+            counterfactual_passed: Whether counterfactual verification invariants held.
+            uncertainty_score: Composite uncertainty score (0.0=certain to 1.0=uncertain).
 
         Returns:
             ConfidenceResult with level, score, and reason.
@@ -151,6 +155,15 @@ class ConfidenceScorer:
             reason="Whether results look reasonable",
         ))
 
+        # Uncertainty decomposition signal
+        if uncertainty_score > 0.0:
+            signals.append(ConfidenceSignal(
+                name="uncertainty_decomposition",
+                score=max(0.0, 1.0 - uncertainty_score),
+                weight=1.5,
+                reason="Uncertainty decomposition across schema, join, aggregation, and value grounding",
+            ))
+
         # Hard penalties for critical issues
         if has_hallucinated_refs:
             signals.append(ConfidenceSignal(
@@ -176,6 +189,14 @@ class ConfidenceScorer:
                 reason="Question is ambiguous",
             ))
 
+        if not counterfactual_passed:
+            signals.append(ConfidenceSignal(
+                name="counterfactual_penalty",
+                score=0.1,
+                weight=2.0,
+                reason="Failed counterfactual invariant checks",
+            ))
+
         # Compute weighted average
         total_weight = sum(s.weight for s in signals)
         if total_weight == 0:
@@ -191,10 +212,14 @@ class ConfidenceScorer:
             reasons.append("unsafe cartesian join detected")
         if is_ambiguous:
             reasons.append("question is ambiguous")
+        if not counterfactual_passed:
+            reasons.append("counterfactual invariants violated")
         if verification_score < 0.5:
             reasons.append("verification found issues")
         if schema_match < 0.5:
             reasons.append("poor schema match")
+        if uncertainty_score > 0.4:
+            reasons.append("high relational uncertainty")
 
         if composite <= self._refusal_threshold:
             level = ConfidenceLevel.REFUSED

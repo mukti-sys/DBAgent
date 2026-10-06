@@ -5,6 +5,7 @@ Query commands — /explain to understand the last query, /sql to run raw SQL di
 from rich.panel import Panel
 from rich.syntax import Syntax
 from src.interface import display
+from src.interface.display import THEME as T, console
 from src.agent.executor import QueryExecutor
 
 
@@ -18,8 +19,8 @@ def cmd_explain(args, context):
     sql = last_result.sql
     question = getattr(last_result, "question", "")
 
-    display.console.print(f"\n  [bold cyan]Original Question:[/] {question}")
-    display.console.print(Panel(Syntax(sql, "sql", theme="monokai"), title="[bold blue]SQL Query[/]", border_style="blue"))
+    display.console.print(f"\n  [{T['text_link']}]Original Question:[/] {question}")
+    display.console.print(Panel(Syntax(sql, "sql", theme="monokai"), title=f"[bold {T['text_accent']}]SQL Query[/]", border_style=T["text_accent"]))
 
     # Break down SQL clauses
     explanation_parts = []
@@ -29,7 +30,7 @@ def cmd_explain(args, context):
     if "from" in lower_sql:
         from_idx = lower_sql.find("from")
         clause = sql[from_idx + 4:].split("where")[0].split("group")[0].split("order")[0].split(";")[0].strip()
-        explanation_parts.append(f"[bold]• Sources:[/] Queries data from [cyan]{clause}[/]")
+        explanation_parts.append(f"[bold]* Sources:[/] Queries data from [{T['ui_symbol']}]{clause}[/]")
 
     # Joins
     if "join" in lower_sql:
@@ -39,13 +40,13 @@ def cmd_explain(args, context):
     if "where" in lower_sql:
         where_idx = lower_sql.find("where")
         clause = sql[where_idx + 5:].split("group")[0].split("order")[0].split("limit")[0].split(";")[0].strip()
-        explanation_parts.append(f"[bold]• Filters:[/] Only includes rows matching condition(s): [yellow]{clause}[/]")
+        explanation_parts.append(f"[bold]* Filters:[/] Only includes rows matching: [{T['status_warning']}]{clause}[/]")
 
     # Aggregations & Groupings
     if "group by" in lower_sql:
         grp_idx = lower_sql.find("group by")
         clause = sql[grp_idx + 8:].split("having")[0].split("order")[0].split("limit")[0].split(";")[0].strip()
-        explanation_parts.append(f"[bold]• Grouping:[/] Summarizes metrics grouped by [cyan]{clause}[/]")
+        explanation_parts.append(f"[bold]* Grouping:[/] Summarizes metrics grouped by [{T['ui_symbol']}]{clause}[/]")
 
     if any(agg in lower_sql for agg in ("sum(", "count(", "avg(", "max(", "min(")):
         aggs = [agg.upper()[:-1] for agg in ("sum(", "count(", "avg(", "max(", "min(") if agg in lower_sql]
@@ -56,24 +57,51 @@ def cmd_explain(args, context):
         ord_idx = lower_sql.find("order by")
         clause = sql[ord_idx + 8:].split("limit")[0].split(";")[0].strip()
         desc = "descending (highest first)" if "desc" in clause.lower() else "ascending (lowest first)"
-        explanation_parts.append(f"[bold]• Sorting:[/] Orders output {desc} by [cyan]{clause}[/]")
+        explanation_parts.append(f"[bold]* Sorting:[/] Orders output {desc} by [{T['ui_symbol']}]{clause}[/]")
 
     # Limit
     if "limit" in lower_sql:
         lim_idx = lower_sql.find("limit")
         clause = sql[lim_idx + 5:].split(";")[0].strip()
-        explanation_parts.append(f"[bold]• Restriction:[/] Limits output to top [green]{clause}[/] rows")
+        explanation_parts.append(f"[bold]* Restriction:[/] Limits output to top [{T['status_success']}]{clause}[/] rows")
 
-    display.console.print("\n  [bold green]Query Breakdown:[/]")
+    console.print(f"\n  [{T['status_success']}]Query Breakdown:[/]")
     for part in explanation_parts:
-        display.console.print(f"  {part}")
+        console.print(f"  {part}")
+
+    # Uncertainty Decomposition
+    unc = getattr(last_result, "uncertainty", None)
+    if unc:
+        console.print(f"\n  [{T['text_accent']}]Uncertainty Decomposition:[/] Overall: {unc.composite_uncertainty:.0%} ({unc.dominant_dimension})")
+        dims = [
+            ("Schema Linking", unc.schema_linking.uncertainty, unc.schema_linking.reasons),
+            ("Join Path", unc.join_path.uncertainty, unc.join_path.reasons),
+            ("Aggregation", unc.aggregation.uncertainty, unc.aggregation.reasons),
+            ("Value Grounding", unc.value_grounding.uncertainty, unc.value_grounding.reasons),
+        ]
+        for name, score, reasons in dims:
+            status_color = T['status_success'] if score < 0.25 else (T['status_warning'] if score < 0.5 else T['status_error'])
+            reason_txt = f" - {reasons[0]}" if reasons else ""
+            console.print(f"    • {name:<17}: [{status_color}]{score:.0%}[/]{reason_txt}")
+
+    # Counterfactual Verification
+    cf = getattr(last_result, "counterfactual_result", None)
+    if cf and cf.executed:
+        status_color = T['status_success'] if cf.passed else T['status_warning']
+        status_label = "PASSED" if cf.passed else "FLAGGED"
+        console.print(f"\n  [{T['text_link']}]Counterfactual Invariant Checks:[/] [{status_color}]{status_label}[/]")
+        for chk in cf.checks:
+            mark = f"[{T['status_success']}]✓[/]" if chk.passed else f"[{T['status_error']}]✗[/]"
+            console.print(f"    {mark} {chk.description}")
+            if not chk.passed and chk.reason:
+                console.print(f"      [{T['status_error']}]{chk.reason}[/]")
 
     if getattr(last_result, "assumptions", None):
-        display.console.print("\n  [bold yellow]Assumptions Made by Agent:[/]")
+        console.print(f"\n  [{T['status_warning']}]Assumptions Made by Agent:[/]")
         for a in last_result.assumptions:
-            display.console.print(f"  📋 {a}")
+            console.print(f"  {a}")
 
-    display.console.print()
+    console.print()
 
 
 def cmd_sql(args, context):
