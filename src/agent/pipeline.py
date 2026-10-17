@@ -17,6 +17,10 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+from src.agent.uncertainty import UncertaintyDecomposer, UncertaintyDecomposition, TargetedClarification
+from src.agent.answer_set import AnswerSetGenerator, HonestAnswerSet
+from src.agent.counterfactual import CounterfactualVerifier, CounterfactualResult
+
 logger = logging.getLogger(__name__)
 
 
@@ -43,6 +47,10 @@ class PipelineResult:
     glossary_terms: list[str] = field(default_factory=list)
     correction_rules: list[str] = field(default_factory=list)
     execution_time_ms: float = 0.0
+    uncertainty: UncertaintyDecomposition | None = None
+    targeted_clarification: TargetedClarification | None = None
+    answer_set: HonestAnswerSet | None = None
+    counterfactual_result: CounterfactualResult | None = None
 
     @property
     def has_warnings(self) -> bool:
@@ -56,6 +64,10 @@ class PipelineResult:
         parts = []
         if self.refused:
             parts.append(f"❌ Refused: {self.refusal_reason}")
+            if self.targeted_clarification:
+                parts.append(f"\n💡 Clarification Needed: {self.targeted_clarification.question}")
+                if self.targeted_clarification.options:
+                    parts.append("  Options: " + ", ".join(self.targeted_clarification.options))
             return "\n".join(parts)
         if self.error:
             parts.append(f"❌ Error: {self.error}")
@@ -64,6 +76,12 @@ class PipelineResult:
             parts.append(f"✅ Query returned {self.row_count} row(s)")
         if self.confidence_level:
             parts.append(f"📊 Confidence: {self.confidence_level}")
+        if self.uncertainty:
+            parts.append(f"🎯 Uncertainty: {self.uncertainty.composite_uncertainty:.0%} ({self.uncertainty.dominant_dimension})")
+        if self.answer_set and self.answer_set.has_alternatives:
+            parts.append("\n" + self.answer_set.format_display())
+        if self.targeted_clarification and not self.refused:
+            parts.append(f"\n💡 Note: {self.targeted_clarification.question}")
         if self.validation_findings:
             parts.append("\n### Validation Findings")
             for f in self.validation_findings:
@@ -82,7 +100,8 @@ class Pipeline:
     Required modules: sql_generator, executor, critic.
     Optional: schema_index, reasoning_engine, result_validator,
               confidence_scorer, injection_defense, glossary_store,
-              correction_memory, auto_memory.
+              correction_memory, auto_memory,
+              uncertainty_decomposer, counterfactual_verifier, answer_set_generator.
     """
 
     def __init__(
@@ -98,6 +117,9 @@ class Pipeline:
         glossary_store=None,
         correction_memory=None,
         auto_memory=None,
+        uncertainty_decomposer=None,
+        counterfactual_verifier=None,
+        answer_set_generator=None,
         dialect: str = "sqlite",
     ):
         if sql_generator is None:
@@ -118,6 +140,9 @@ class Pipeline:
         self._glossary_store = glossary_store
         self._correction_memory = correction_memory
         self._auto_memory = auto_memory
+        self._uncertainty_decomposer = uncertainty_decomposer or UncertaintyDecomposer()
+        self._counterfactual_verifier = counterfactual_verifier or CounterfactualVerifier(executor=executor)
+        self._answer_set_generator = answer_set_generator or AnswerSetGenerator()
         self._dialect = dialect
 
     def run(self, question: str) -> PipelineResult:
@@ -221,6 +246,46 @@ class Pipeline:
                 result.error = str(e)
                 return result
 
+        # Stage 4.5: Uncertainty Decomposition & Targeted Clarification
+        if self._uncertainty_decomposer and result.sql:
+            try:
+                schema_tables = {}
+                foreign_keys = []
+                if self._schema_index and hasattr(self._schema_index, "get_tables"):
+                    try:
+                        schema_tables = self._schema_index.get_tables()
+                    except Exception:
+                        pass
+                unc = self._uncertainty_decomposer.decompose(
+                    question=question,
+                    sql=result.sql,
+                    schema_tables=schema_tables,
+                    foreign_keys=foreign_keys,
+                )
+                result.uncertainty = unc
+                if unc.needs_clarification and unc.clarification:
+                    result.targeted_clarification = unc.clarification
+            except Exception as e:
+                logger.error(f"Uncertainty decomposition error (continuing): {e}")
+
+        # Stage 4.6: Honest Answer Set (Ambiguity / Warning Band Check)
+        if self._answer_set_generator and result.sql:
+            try:
+                if self._answer_set_generator.should_generate_answer_set(
+                    confidence_score=0.7,
+                    uncertainty=result.uncertainty,
+                ):
+                    answer_set = self._answer_set_generator.build_answer_set(
+                        question=question,
+                        primary_sql=result.sql,
+                        uncertainty=result.uncertainty,
+                        executor=self._executor,
+                    )
+                    if answer_set.has_alternatives:
+                        result.answer_set = answer_set
+            except Exception as e:
+                logger.error(f"Answer set generation error (continuing): {e}")
+
         # Stage 5: Execution
         if result.sql:
             try:
@@ -239,6 +304,23 @@ class Pipeline:
                 result.error = str(e)
                 return result
 
+        # Stage 5.5: Counterfactual Verification (Gated Execution + Safe Read-Only)
+        if self._counterfactual_verifier and result.sql and result.success:
+            try:
+                unc_score = result.uncertainty.composite_uncertainty if result.uncertainty else 0.0
+                cf_result = self._counterfactual_verifier.verify(
+                    sql=result.sql,
+                    original_rows=result.rows,
+                    confidence_score=1.0,
+                    uncertainty_score=unc_score,
+                )
+                result.counterfactual_result = cf_result
+                if not cf_result.passed:
+                    for finding in cf_result.findings:
+                        result.validation_findings.append(f"Counterfactual finding: {finding}")
+            except Exception as e:
+                logger.error(f"Counterfactual verification error (continuing): {e}")
+
         # Stage 6: Result Validation
         if self._result_validator and result.success and result.rows:
             try:
@@ -247,8 +329,8 @@ class Pipeline:
                     rows=result.rows, column_names=result.column_names,
                     row_count=result.row_count,
                 )
-                result.validation_findings = [f.display() for f in validation.findings]
-                result.assumptions = [a.description for a in validation.assumptions]
+                result.validation_findings.extend([f.display() for f in validation.findings])
+                result.assumptions.extend([a.description for a in validation.assumptions])
                 result.cross_check_sql = validation.cross_check_sql
                 if not validation.is_trustworthy:
                     result.success = False
@@ -259,8 +341,15 @@ class Pipeline:
         # Stage 7: Confidence Gate
         if self._confidence_scorer and result.success:
             try:
+                cf_passed = True
+                if result.counterfactual_result:
+                    cf_passed = result.counterfactual_result.passed
+                unc_score = result.uncertainty.composite_uncertainty if result.uncertainty else 0.0
+
                 conf = self._confidence_scorer.score(
                     result_sanity=0.0 if result.validation_findings else 1.0,
+                    counterfactual_passed=cf_passed,
+                    uncertainty_score=unc_score,
                 )
                 result.confidence_level = conf.display()
                 result.confidence_score = conf.score
