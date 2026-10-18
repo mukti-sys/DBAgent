@@ -126,6 +126,19 @@ class EvalReport:
         lines.append("=" * 60)
         return "\n".join(lines)
 
+    def generate_calibration_report(self):
+        """Generate first-class ECE and Accuracy-Refusal benchmark metrics."""
+        from src.agent.calibration_eval import CalibrationEvaluator
+        preds = []
+        for r in self.results:
+            conf = 0.90 if r.confidence_level == "high" else (0.50 if r.was_flagged else (0.20 if r.was_refused else 0.75))
+            preds.append({
+                "confidence": conf,
+                "correct": r.passed,
+                "was_refused": r.was_refused,
+            })
+        return CalibrationEvaluator().evaluate(preds)
+
 
 class EvalHarness:
     """
